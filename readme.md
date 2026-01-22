@@ -30,4 +30,7 @@ python src/main.py
 
 **Agent ma dostęp do terminala Twojego systemu. Używaj rozważnie.**
 
+## 📸 Screenshot
+![Demo Interface](demo.png)
+
 Created by Radian20Hz
