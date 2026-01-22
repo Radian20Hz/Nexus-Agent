@@ -17,7 +17,7 @@ Nexus-Agent to zaawansowany system, który zamienia Twój komputer w autonomiczn
 2. Pobierz model: `ollama run phi3`.
 3. Sklonuj repozytorium:
    ```bash
-   git clone https://github.com/TwojNick/Nexus-Agent.git
+   git clone https://github.com/Radian20Hz/Nexus-Agent.git
    cd Nexus-Agent
 4. Zainstaluj zależności:
     pip install -r requirements.txt

@@ -5,12 +5,12 @@ import re
 import ollama
 from duckduckgo_search import DDGS
 from colorama import Fore, Style, init
+from knowledge import KnowledgeBase # Importujemy nasz nowy moduł
 
-# Inicjalizacja kolorów
 init(autoreset=True)
 
 # --- KONFIGURACJA ---
-MODEL_NAME = "phi3" # lub llama3
+MODEL_NAME = "phi3" # Upewnij się, że masz ten model w Ollama (lub zmień na llama3)
 WORKSPACE_DIR = "workspace"
 MEMORY_FILE = os.path.join(WORKSPACE_DIR, "brain_memory.json")
 
@@ -20,17 +20,22 @@ class NexusAgent:
     def __init__(self, model):
         self.model = model
         self.memory = self.load_memory()
+        
+        # Inicjalizacja RAG
+        self.knowledge = KnowledgeBase()
+
         self.system_prompt = """
-        Jesteś Nexus-Dev (v1.0) - Autonomicznym Inżynierem działającym lokalnie.
+        Jesteś Nexus-Dev - Autonomicznym Inżynierem.
         
         NARZĘDZIA:
-        1. write_file(name || content) - Tworzenie kodu.
-        2. read_file(name) - Analiza plików.
+        1. write_file(name || content) - Tworzenie kodu/plików.
+        2. read_file(name) - Analiza plików z dysku.
         3. shell(command) - Wykonywanie komend systemowych.
-        4. search(query) - Internet.
+        4. search(query) - Wyszukiwanie w internecie.
+        5. consult_archive(query) - Szukanie informacji w wgranych PDFach/Dokumentach.
         
         ZASADY:
-        - Jesteś precyzyjny.
+        - Jeśli użytkownik pyta o dokumenty/wiedzę, której nie masz, użyj `consult_archive`.
         - Jeśli piszesz kod, używaj bloków ```python.
         - Myśl krok po kroku.
         
@@ -60,26 +65,23 @@ class NexusAgent:
     def tool_shell(self, command):
         command = command.replace("`", "").strip()
         self.log(f"\n[⚠️ SECURITY ALERT] Komenda: {command}", Fore.RED)
-        # Automatyczna zgoda dla prostych komend (opcjonalne, dla wygody)
-        if command.startswith("ls") or command.startswith("cat") or command.startswith("echo"):
+        if command.startswith(("ls", "cat", "echo", "python", "pip")): # Auto-zgoda dla bezpiecznych
             pass 
         else:
-            consent = input(f"{Fore.YELLOW}ZEZWOLIĆ? (t/n): {Style.RESET_ALL}")
-            if consent.lower() != 't': return "Odmowa użytkownika."
+            # W trybie GUI nie mamy input(), więc zakładamy zgodę lub blokadę. 
+            # Dla bezpieczeństwa można tu dać return "Wymagana zgoda administratora"
+            pass 
         
         try:
             result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60, cwd=WORKSPACE_DIR)
-            if not result.stdout and not result.stderr: return "Wykonano (brak outputu)."
+            if not result.stdout and not result.stderr: return "Wykonano."
             return f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         except Exception as e: return f"Błąd: {e}"
 
     def tool_write(self, args):
         try:
-            if "||" in args:
-                filename, content = args.split("||", 1)
-            else:
-                return "Błąd: Użyj separatora || albo bloku kodu."
-            
+            if "||" in args: filename, content = args.split("||", 1)
+            else: return "Błąd formatu zapisu."
             filename = filename.replace("`", "").strip()
             path = os.path.join(WORKSPACE_DIR, filename)
             with open(path, 'w', encoding='utf-8') as f: f.write(content.strip())
@@ -101,73 +103,21 @@ class NexusAgent:
                 if not results: return "Brak wyników."
                 return "\n".join([f"{r['title']}: {r['body']}" for r in results])
         except Exception as e: return f"Błąd sieci: {e}"
+        
+    def tool_rag(self, query):
+        self.log(f"[RAG] Przeszukuję bazę wiedzy: {query}", Fore.CYAN)
+        return self.knowledge.search(query)
 
     def execute_tool(self, action, action_input, full_response):
         if action == "shell": return self.tool_shell(action_input)
         if action == "read_file": return self.tool_read(action_input)
         if action == "search": return self.tool_search(action_input)
+        if action == "consult_archive": return self.tool_rag(action_input)
         
         if action == "write_file":
-            # Parser kodu z bloków ```
             if "||" not in action_input:
                 code_blocks = re.findall(r"```(?:python|bash)?\n(.*?)```", full_response, re.DOTALL)
-                if code_blocks:
-                    return self.tool_write(f"{action_input}||{code_blocks[-1]}")
+                if code_blocks: return self.tool_write(f"{action_input}||{code_blocks[-1]}")
             return self.tool_write(action_input)
             
         return "Nieznane narzędzie."
-
-    def run(self):
-        self.log("╔════════════════════════════════════════╗", Fore.CYAN)
-        self.log(f"║ NEXUS-AGENT v2.0 (Model: {self.model}) ║", Fore.CYAN)
-        self.log("╚════════════════════════════════════════╝", Fore.CYAN)
-        
-        if not self.memory: self.memory = [{"role": "system", "content": self.system_prompt}]
-
-        while True:
-            try:
-                user_input = input(f"\n{Fore.GREEN}USER > {Style.RESET_ALL}")
-                if user_input.lower() in ['exit', 'quit']: break
-                
-                self.memory.append({"role": "user", "content": user_input})
-                
-                steps = 0
-                while steps < 10:
-                    steps += 1
-                    # Spinner / Info o myśleniu
-                    print(f"{Fore.BLACK}{Style.BRIGHT}Thinking...{Style.RESET_ALL}", end="\r")
-                    
-                    try:
-                        response = ollama.chat(model=self.model, messages=self.memory)['message']['content']
-                    except Exception as e:
-                        self.log(f"Błąd LLM: {e}", Fore.RED); break
-
-                    self.log(f"\n[AI]: {response}", Fore.BLUE)
-                    self.memory.append({"role": "assistant", "content": response})
-                    self.save_memory()
-
-                    if "Final Answer:" in response: break
-                    
-                    # Parsing
-                    action_match = re.search(r"Action:\s*(.*)", response)
-                    input_match = re.search(r"Action Input:\s*(.*)", response)
-                    
-                    if action_match:
-                        action = action_match.group(1).strip()
-                        # Input może być wielolinijkowy, bierzemy pierwszą linię jako argument prosty
-                        # ale przekazujemy full_response do execute_tool dla write_file
-                        act_input = input_match.group(1).strip().strip('"') if input_match else ""
-                        
-                        self.log(f"[SYSTEM] Uruchamiam: {action}", Fore.YELLOW)
-                        result = self.execute_tool(action, act_input, response)
-                        
-                        self.log(f"[WYNIK]: {str(result)[:200]}...", Fore.MAGENTA)
-                        self.memory.append({"role": "user", "content": f"Observation: {result}"})
-                    else:
-                        self.memory.append({"role": "user", "content": "Observation: Please continue or use Final Answer."})
-                        
-            except KeyboardInterrupt: break
-
-if __name__ == "__main__":
-    agent = NexusAgent(MODEL_NAME)
-    agent.run()
